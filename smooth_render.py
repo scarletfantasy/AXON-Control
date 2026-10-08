@@ -149,6 +149,20 @@ def painted(attribute=None, *, tags='paint'):
     return decorate
 
 
+def framed(attribute):
+    """Stage a caller-supplied image and its native text as one complete frame."""
+    def decorate(method):
+        @wraps(method)
+        def call(owner, *args, **kwargs):
+            canvas = getattr(owner, attribute, None)
+            if isinstance(canvas, SmoothCanvas):
+                with canvas.frame():
+                    return method(owner, *args, **kwargs)
+            return method(owner, *args, **kwargs)
+        return call
+    return decorate
+
+
 class SmoothCanvas(tk.Canvas):
     """One raster graphic layer beneath native text and embedded input widgets."""
     def __init__(self, *args, **kwargs):
@@ -156,14 +170,112 @@ class SmoothCanvas(tk.Canvas):
         self._raster = None
         self._paint_photo = None
         self._paint_signature = None
+        self._frame_state = None
+        self._resize_timer = None
+        self._resize_size = None
+        self._resize_draw = None
+
+    def bind_resize(self, callback):
+        """Collapse a layout burst into one redraw after Tk's geometry settles."""
+        def configured(event):
+            size = (event.width, event.height)
+            if size != self._resize_size:
+                self._resize_size = size
+                self.redraw_later(callback)
+        self.bind('<Configure>', configured)
+
+    def redraw_later(self, callback):
+        self._resize_draw = callback
+        if self._resize_timer is None:
+            self._resize_timer = self.after_idle(self._flush_resize)
+
+    def _flush_resize(self):
+        self._resize_timer = None
+        callback, self._resize_draw = self._resize_draw, None
+        if callback is not None:
+            callback()
 
     def destroy(self):
+        timer = getattr(self, '_resize_timer', None)
+        if timer is not None:
+            self.after_cancel(timer)
+        self._resize_timer = self._resize_draw = None
         # Release the Tk image now, on the same thread that destroys the
         # widget, instead of retaining it in an orphaned popup reference cycle.
         self._paint_photo = None
         self._paint_signature = None
         self._raster = None
+        self._frame_state = None
         super().destroy()
+
+    @contextmanager
+    def frame(self):
+        if getattr(self, '_frame_state', None) is not None:
+            yield
+            return
+        state = self._frame_state = {'created': {}, 'deleted': set(), 'photo': None}
+        try:
+            yield
+        except BaseException:
+            if state['created']:
+                super().delete(*state['created'])
+            raise
+        else:
+            image_item = None
+            if state['photo'] is not None:
+                photo, signature, tags = state['photo']
+                image_item = self._publish_photo(photo, signature, tags)
+            deleted = state['deleted'] - {image_item}
+            if deleted:
+                super().delete(*deleted)
+            for item, desired_state in state['created'].items():
+                if item not in deleted:
+                    super().itemconfigure(item, state=desired_state)
+        finally:
+            self._frame_state = None
+
+    def delete(self, *targets):
+        state = getattr(self, '_frame_state', None)
+        if state is None:
+            return super().delete(*targets)
+        for target in targets:
+            state['deleted'].update(super().find_withtag(target))
+
+    def _create_item(self, method, *args, **options):
+        state = getattr(self, '_frame_state', None)
+        desired = options.get('state', 'normal')
+        if state is not None:
+            options['state'] = 'hidden'
+        item = method(*args, **options)
+        if state is not None:
+            state['created'][item] = desired
+        return item
+
+    def create_text(self, *coordinates, **options):
+        return self._create_item(super().create_text, *coordinates, **options)
+
+    def create_rectangle(self, *coordinates, **options):
+        return self._create_item(super().create_rectangle, *coordinates, **options)
+
+    def _publish_photo(self, photo, signature, tags):
+        existing = super().find_withtag('_smooth_layer')
+        if existing:
+            item = existing[0]
+            super().itemconfigure(item, image=photo, tags=('_smooth_layer', tags))
+        else:
+            item = self._create_item(super().create_image, 0, 0, image=photo, anchor='nw',
+                                     tags=('_smooth_layer', tags))
+        super().tag_lower(item)
+        # Retain the old PhotoImage until the canvas has switched to the new one.
+        self._paint_photo, self._paint_signature = photo, signature
+        return item
+
+    def present(self, picture, *, tags='paint', signature=None):
+        photo = ImageTk.PhotoImage(picture, master=self)
+        if getattr(self, '_frame_state', None) is not None:
+            self._frame_state['photo'] = (photo, signature, tags)
+        else:
+            self._publish_photo(photo, signature, tags)
 
     @contextmanager
     def paint(self, *, tags='paint'):
@@ -174,19 +286,12 @@ class SmoothCanvas(tk.Canvas):
                             scale=getattr(self, 'raster_scale', None))
         self._raster = layer
         try:
-            yield
-        except BaseException:
-            raise
-        else:
-            if layer.signature != self._paint_signature or self._paint_photo is None:
-                picture = layer.render()
-                self._paint_photo = ImageTk.PhotoImage(picture, master=self)
-                self._paint_signature = layer.signature
-            # Replace, rather than accumulate, graphic layers during hover/drag.
-            super().delete('_smooth_layer')
-            item = super().create_image(0, 0, image=self._paint_photo, anchor='nw',
-                                        tags=('_smooth_layer', tags))
-            super().tag_lower(item)
+            with self.frame():
+                yield
+                if layer.signature != self._paint_signature or self._paint_photo is None:
+                    self.present(layer.render(), tags=tags, signature=layer.signature)
+                else:
+                    self._frame_state['photo'] = (self._paint_photo, layer.signature, tags)
         finally:
             self._raster = None
 
@@ -197,47 +302,47 @@ class SmoothCanvas(tk.Canvas):
     def create_rounded(self, x1, y1, x2, y2, radius, **options):
         # New Tk widgets are initially 1x1 until their first Configure event.
         if x2 <= x1 or y2 <= y1:
-            return super().create_rectangle(x1, y1, x2, y2, fill='', outline='',
-                                            tags=options.get('tags', ()))
+            return self._create_item(super().create_rectangle, x1, y1, x2, y2, fill='', outline='',
+                                     tags=options.get('tags', ()))
         radius = max(0, min(radius, (x2-x1)/2, (y2-y1)/2))
         if self._raster is not None:
             self._raster.add('rounded', (x1, y1, x2, y2), options.get('fill', ''),
                              outline=options.get('outline', ''), width=options.get('width', 1), radius=radius)
-            return super().create_rectangle(x1, y1, x2, y2, fill='', outline='',
-                                            tags=options.get('tags', ()))
+            return self._create_item(super().create_rectangle, x1, y1, x2, y2, fill='', outline='',
+                                     tags=options.get('tags', ()))
         points = (x1+radius, y1, x2-radius, y1, x2, y1, x2, y1+radius,
                   x2, y2-radius, x2, y2, x2-radius, y2, x1+radius, y2,
                   x1, y2, x1, y2-radius, x1, y1+radius, x1, y1)
-        return super().create_polygon(points, smooth=True, splinesteps=24, **options)
+        return self._create_item(super().create_polygon, points, smooth=True, splinesteps=24, **options)
 
     def create_line(self, *coordinates, **options):
         if self._raster is None:
-            return super().create_line(*coordinates, **options)
+            return self._create_item(super().create_line, *coordinates, **options)
         self._raster.add('line', self._coordinates(coordinates), options.get('fill', 'black'),
                          width=options.get('width', 1), dash=options.get('dash', ()),
                          cap=options.get('capstyle', 'butt'))
-        return super().create_line(*coordinates, fill='', tags=options.get('tags', ()))
+        return self._create_item(super().create_line, *coordinates, fill='', tags=options.get('tags', ()))
 
     def create_oval(self, *coordinates, **options):
         if self._raster is None:
-            return super().create_oval(*coordinates, **options)
+            return self._create_item(super().create_oval, *coordinates, **options)
         self._raster.add('oval', self._coordinates(coordinates), options.get('fill', ''),
                          outline=options.get('outline', 'black'), width=options.get('width', 1))
-        return super().create_oval(*coordinates, fill='', outline='', tags=options.get('tags', ()))
+        return self._create_item(super().create_oval, *coordinates, fill='', outline='', tags=options.get('tags', ()))
 
     def create_polygon(self, *coordinates, **options):
         if self._raster is None:
-            return super().create_polygon(*coordinates, **options)
+            return self._create_item(super().create_polygon, *coordinates, **options)
         self._raster.add('polygon', self._coordinates(coordinates), options.get('fill', 'black'),
                          outline=options.get('outline', ''), width=options.get('width', 1))
-        return super().create_polygon(*coordinates, fill='', outline='', tags=options.get('tags', ()))
+        return self._create_item(super().create_polygon, *coordinates, fill='', outline='', tags=options.get('tags', ()))
 
     def create_arc(self, *coordinates, **options):
         if self._raster is None:
-            return super().create_arc(*coordinates, **options)
+            return self._create_item(super().create_arc, *coordinates, **options)
         self._raster.add('arc', self._coordinates(coordinates), options.get('outline', 'black'),
                          width=options.get('width', 1), start=options.get('start', 0), extent=options.get('extent', 90))
-        return super().create_arc(*coordinates, outline='', tags=options.get('tags', ()))
+        return self._create_item(super().create_arc, *coordinates, outline='', tags=options.get('tags', ()))
 
 
 def icon(canvas, name, cx, cy, size=16, color='#adb6bd', tags=()):
@@ -254,6 +359,15 @@ def icon(canvas, name, cx, cy, size=16, color='#adb6bd', tags=()):
         radius = half*.55
         line(cx-radius, cy-radius, cx+radius, cy-radius, cx+radius, cy+radius,
              cx-radius, cy+radius, cx-radius, cy-radius)
+    elif name == 'restore':
+        radius = half*.45
+        offset = half*.3
+        line(cx-radius+offset, cy+radius-offset, cx+radius+offset, cy+radius-offset,
+             cx+radius+offset, cy-radius-offset, cx-radius+offset, cy-radius-offset,
+             cx-radius+offset, cy-radius)
+        line(cx-radius-offset/2, cy-radius+offset/2, cx+radius-offset/2, cy-radius+offset/2,
+             cx+radius-offset/2, cy+radius+offset/2, cx-radius-offset/2, cy+radius+offset/2,
+             cx-radius-offset/2, cy-radius+offset/2)
     elif name == 'more':
         for x in (cx-half*.6, cx, cx+half*.6):
             canvas.create_oval(x-1, cy-1, x+1, cy+1, fill=color, outline='', tags=tags)

@@ -68,10 +68,12 @@ class ProductFeatures:
         user.SetWindowPos(self.native_hwnd, None, x, y, 0, 0, 0x15)
 
     def _remember_environment(self):
-        geometry = self.normal_geometry if self.window_maximized else self.root.geometry()
+        native = getattr(self, 'native_window', None)
+        geometry = self.normal_geometry if self.window_maximized else (
+            native.geometry if native is not None else self.root.geometry())
         user = ctypes.WinDLL('user32')
         user.IsIconic.argtypes = [ctypes.c_void_p]
-        if self.root.state() != 'normal' or (self.native_hwnd and user.IsIconic(self.native_hwnd)):
+        if self.root.state() in ('withdrawn', 'iconic') or (self.native_hwnd and user.IsIconic(self.native_hwnd)):
             geometry = self.desktop.window_geometry
         values = (geometry, self.audio_panel.source, self.audio_panel.source_name, self.audio_panel.style)
         if values != (self.desktop.window_geometry, self.desktop.audio_source, self.desktop.audio_source_label,

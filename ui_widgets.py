@@ -35,14 +35,17 @@ class Panel(SmoothCanvas):
         self.body_id = self.create_window(padding, padding, window=self.body, anchor='nw')
         self.bind('<Configure>', self._layout)
 
-    @painted(tags='surface')
     def _layout(self, event):
-        self.delete('surface')
-        shape = rounded(self, 0, 0, event.width, event.height, self.radius,
-                        fill=self.color, outline='', tags='surface')
-        self.tag_lower(shape)
         self.itemconfigure(self.body_id, width=max(1, event.width-self.padding*2),
                            height=max(1, event.height-self.padding*2))
+        self.redraw_later(self._draw_surface)
+
+    @painted(tags='surface')
+    def _draw_surface(self):
+        self.delete('surface')
+        shape = rounded(self, 0, 0, self.winfo_width(), self.winfo_height(), self.radius,
+                        fill=self.color, outline='', tags='surface')
+        self.tag_lower(shape)
 
 
 class Button(SmoothCanvas):
@@ -54,7 +57,7 @@ class Button(SmoothCanvas):
         self.icon_name = icon_name
         self.align = align
         self.enabled, self.hover, self.focused = True, False, False
-        self.bind('<Configure>', lambda event: self.redraw())
+        self.bind_resize(self.redraw)
         self.bind('<Enter>', lambda event: self._hover(True))
         self.bind('<Leave>', lambda event: self._hover(False))
         self.bind('<FocusIn>', lambda event: self._focus(True))
@@ -66,6 +69,11 @@ class Button(SmoothCanvas):
     def _hover(self, value):
         self.hover = value
         self.redraw()
+
+    def set_icon(self, name):
+        if name != self.icon_name:
+            self.icon_name = name
+            self.redraw()
 
     def _focus(self, value):
         self.focused = value
@@ -319,7 +327,7 @@ class ReviewPopup(tk.Frame):
                  fg=MUTED, font=(FONT, 8)).pack(side='right', padx=12)
         self.canvas.bind('<Motion>', self._motion)
         self.canvas.bind('<ButtonRelease-1>', self._pick)
-        self.canvas.bind('<Configure>', lambda event: self.redraw())
+        self.canvas.bind_resize(self.redraw)
         self.rail.bind('<ButtonPress-1>', self._rail_move)
         self.rail.bind('<B1-Motion>', self._rail_move)
         for surface in (self, self.canvas, self.rail):
@@ -480,7 +488,7 @@ class BandTile(SmoothCanvas):
         self.selected, self.band_enabled, self.enabled, self.hover = False, True, False, False
         self.frequency = '—'
         self.change_count, self.invalid = 0, False
-        self.bind('<Configure>', lambda event: self.redraw())
+        self.bind_resize(self.redraw)
         self.bind('<Enter>', lambda event: self._hover(True))
         self.bind('<Leave>', lambda event: self._hover(False))
         self.bind('<ButtonRelease-1>', lambda event: self.command() if self.enabled else None)
@@ -533,7 +541,7 @@ class Toggle(SmoothCanvas):
         super().__init__(parent, bg=parent.cget('bg'), width=48, height=28,
                          bd=0, highlightthickness=0, takefocus=True)
         self.variable, self.trace_id, self.enabled = None, None, False
-        self.bind('<Configure>', lambda event: self.redraw())
+        self.bind_resize(self.redraw)
         self.bind('<ButtonRelease-1>', self._toggle)
         self.bind('<space>', self._toggle)
         self.set_variable(variable)
@@ -593,7 +601,7 @@ class ParameterCard(SmoothCanvas):
         self.entry.bind('<Up>', lambda event: self._keyboard_nudge(event, 1))
         self.entry.bind('<Down>', lambda event: self._keyboard_nudge(event, -1))
         self.entry.bind('<MouseWheel>', self._wheel)
-        self.bind('<Configure>', lambda event: self.redraw())
+        self.bind_resize(self.redraw)
         self.bind('<ButtonPress-1>', self._press)
         self.bind('<B1-Motion>', self._slide)
         self.bind('<ButtonRelease-1>', self._boundary)

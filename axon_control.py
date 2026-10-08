@@ -10,8 +10,10 @@ import queue
 import threading
 import time
 import tkinter as tk
+import _tkinter
 from tkinter import filedialog
 from desktop_integration import Preferences, Startup, TrayIcon, WindowIcons, set_taskbar_identity
+from window_manager import NativeWindow
 
 from axon_protocol import AxonClient, BANDS, Preset, ReadCancelled, name_bytes
 from editor_state import (FIELDS, FIELD_LABELS, INPUT_HINTS, EditHistory, FieldError, changed_fields,
@@ -97,6 +99,11 @@ class App(ProductFeatures):
         self.window_maximized = False
         self.normal_geometry = None
         self.native_hwnd = None
+        self.native_window = None
+        self.window_state_timer = None
+        self.geometry_timer = None
+        self.pending_geometry = None
+        self.window_transition = False
         self.band_title = tk.StringVar(value='LF')
         self.band_description = tk.StringVar(value='低频')
         self.band_hint = tk.StringVar(value='LF · 低频')
@@ -113,7 +120,7 @@ class App(ProductFeatures):
         self.init_features()
 
     def _style(self):
-        self.root.title('AXON Control 0.20 · AXON 3')
+        self.root.title('AXON Control 0.21 · AXON 3')
         self.root.configure(bg=BG)
         self.root.overrideredirect(True)
         width = min(1120, self.root.winfo_screenwidth()-96)
@@ -129,6 +136,7 @@ class App(ProductFeatures):
         self.root.bind('<Alt-F4>', lambda event: self.close())
         self.root.bind('<Map>', lambda event: self.root.after(10, self._window_theme)
                        if event.widget == self.root else None)
+        self.root.bind('<Configure>', self._window_configured, add='+')
         self.root.after(100, self._window_theme)
 
     def _window_theme(self):
@@ -140,6 +148,12 @@ class App(ProductFeatures):
             user32.GetAncestor.restype = ctypes.c_void_p
             hwnd = user32.GetAncestor(self.root.winfo_id(), 2) or self.root.winfo_id()
             self.native_hwnd = hwnd
+            if self.native_window is None or self.native_window.hwnd != hwnd:
+                if self.native_window is not None:
+                    self.native_window.close()
+                self.native_window = NativeWindow(hwnd)
+            else:
+                self.native_window.prepare()
             if self.window_icons is None:
                 self.window_icons = WindowIcons(HERE / 'axon-icon.ico')
             self.window_icons.apply(hwnd)
@@ -153,21 +167,69 @@ class App(ProductFeatures):
             dwm.DwmSetWindowAttribute.argtypes = [ctypes.c_void_p, ctypes.c_uint,
                                                  ctypes.c_void_p, ctypes.c_uint]
             color = int(BG[1:3], 16) | (int(BG[3:5], 16)<<8) | (int(BG[5:7], 16)<<16)
-            for attribute, value in ((20, 1), (33, 2), (34, color), (35, color)):
+            # DWM's bitmap transition for this borderless GDI window stretches
+            # old child surfaces while Tk lays out the new frame. Skip only this
+            # window's transition to prevent those mixed-size frames appearing.
+            for attribute, value in ((3, 1), (20, 1), (33, 2), (34, color), (35, color)):
                 setting = ctypes.c_uint(value)
                 dwm.DwmSetWindowAttribute(hwnd, attribute, ctypes.byref(setting), ctypes.sizeof(setting))
         except (AttributeError, OSError):
             pass
 
+    def _window_configured(self, event):
+        if event.widget == self.root and self.window_state_timer is None:
+            self.window_state_timer = self.root.after_idle(self._sync_window_state)
+
+    def _sync_window_state(self):
+        self.window_state_timer = None
+        if self.closing or self.root.state() in ('withdrawn', 'iconic'):
+            return
+        if self.native_window is not None and not self.native_window.minimized:
+            self.window_maximized = self.native_window.maximized
+        if not self.window_maximized:
+            self.normal_geometry = self.native_window.geometry if self.native_window is not None else self.root.geometry()
+        self.maximize_button.set_icon('restore' if self.window_maximized else 'maximize')
+        if self.window_maximized:
+            self.resize_grip.place_forget()
+        else:
+            self.resize_grip.place(relx=1, rely=1, anchor='se')
+
     def _move_start(self, event):
         if not self.window_maximized:
-            self.move_origin = (event.x_root, event.y_root, self.root.winfo_x(), self.root.winfo_y())
+            x, y = self.native_window.bounds[:2] if self.native_window is not None else (
+                self.root.winfo_x(), self.root.winfo_y())
+            self.move_origin = (event.x_root, event.y_root, x, y)
 
     def _move_window(self, event):
         if self.window_maximized or not hasattr(self, 'move_origin'):
             return
         x, y, window_x, window_y = self.move_origin
-        self.root.geometry(f'+{max(0, window_x+event.x_root-x)}+{max(0, window_y+event.y_root-y)}')
+        self._queue_geometry('move', window_x+event.x_root-x, window_y+event.y_root-y)
+
+    def _queue_geometry(self, action, first, second):
+        self.pending_geometry = (action, first, second)
+        if self.geometry_timer is None:
+            self.geometry_timer = self.root.after(16, self._flush_geometry)
+
+    def _flush_geometry(self, event=None):
+        if self.geometry_timer is not None:
+            self.root.after_cancel(self.geometry_timer)
+        self.geometry_timer = None
+        pending, self.pending_geometry = self.pending_geometry, None
+        if pending is not None:
+            action, first, second = pending
+            if self.native_window is not None:
+                (self.native_window.move if action == 'move' else self.native_window.resize)(first, second)
+            elif action == 'move':
+                self.root.geometry(f'{first:+d}{second:+d}')
+            else:
+                self.root.geometry(f'{first}x{second}')
+            if action == 'resize' and not self.window_transition:
+                self.window_transition = True
+                try:
+                    self._settle_window_layout()
+                finally:
+                    self.window_transition = False
 
     def _minimize(self):
         if self.desktop.minimize_to_tray:
@@ -176,6 +238,8 @@ class App(ProductFeatures):
         self._minimize_taskbar()
 
     def _hide_to_tray(self):
+        if getattr(self, 'geometry_timer', None) is not None:
+            self._flush_geometry()
         if self.root.grab_current() is not None:
             return
         try:
@@ -189,14 +253,16 @@ class App(ProductFeatures):
         self.root.withdraw()
 
     def _restore_window(self):
+        was_maximized = self.window_maximized
         self.root.deiconify()
         self._window_theme()
         if self.native_hwnd:
             user32 = ctypes.WinDLL('user32')
             user32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
             user32.SetForegroundWindow.argtypes = [ctypes.c_void_p]
-            user32.ShowWindow(self.native_hwnd, 9)
+            user32.ShowWindow(self.native_hwnd, 3 if was_maximized else 9)
             user32.SetForegroundWindow(self.native_hwnd)
+        self._sync_window_state()
         self.root.lift()
         self.root.focus_force()
         if self.tray:
@@ -225,6 +291,22 @@ class App(ProductFeatures):
             user32.ShowWindow(self.native_hwnd, 6)
 
     def _maximize(self):
+        if self.window_transition or self.closing:
+            return
+        self._flush_geometry()
+        self._window_theme()
+        if self.native_window is not None:
+            maximized = self.native_window.maximized
+            if not maximized:
+                self.normal_geometry = self.native_window.geometry
+            self.window_transition = True
+            try:
+                self.native_window.show(not maximized)
+                self._sync_window_state()
+                self._settle_window_layout()
+            finally:
+                self.window_transition = False
+            return
         if self.window_maximized:
             self.root.geometry(self.normal_geometry)
             self.window_maximized = False
@@ -240,6 +322,21 @@ class App(ProductFeatures):
             else:
                 self.root.geometry(f'{self.root.winfo_screenwidth()}x{self.root.winfo_screenheight()-48}+0+0')
             self.window_maximized = True
+        self._sync_window_state()
+
+    def _settle_window_layout(self):
+        # Native ShowWindow queues Configure events; idletasks alone cannot
+        # deliver them. Finish geometry/paint work here without running MIDI,
+        # audio or autosave timers. Callers guard recursive window transitions.
+        # A close event may destroy the interpreter, so stop immediately then.
+        deadline = time.monotonic() + 0.35
+        flags = _tkinter.WINDOW_EVENTS | _tkinter.IDLE_EVENTS | _tkinter.DONT_WAIT
+        try:
+            while not self.closing and time.monotonic() < deadline and self.root.tk.dooneevent(flags):
+                pass
+        except tk.TclError:
+            if not self.closing:
+                raise
 
     def _resize_start(self, event):
         self.resize_origin = (event.x_root, event.y_root, self.root.winfo_width(), self.root.winfo_height())
@@ -248,7 +345,7 @@ class App(ProductFeatures):
         if self.window_maximized or not hasattr(self, 'resize_origin'):
             return
         x, y, width, height = self.resize_origin
-        self.root.geometry(f'{max(980, width+event.x_root-x)}x{max(740, height+event.y_root-y)}')
+        self._queue_geometry('resize', max(980, width+event.x_root-x), max(740, height+event.y_root-y))
 
     def _label(self, parent, text='', **options):
         options.setdefault('fg', TEXT)
@@ -294,10 +391,14 @@ class App(ProductFeatures):
         for surface in (chrome, chrome_caption):
             surface.bind('<ButtonPress-1>', self._move_start)
             surface.bind('<B1-Motion>', self._move_window)
+            surface.bind('<ButtonRelease-1>', self._flush_geometry)
             surface.bind('<Double-Button-1>', lambda event: self._maximize())
         for name, command in (('close', self.close), ('maximize', self._maximize), ('minimize', self._minimize)):
-            Button(chrome, '', command, icon_name=name, width=42, height=30, variant='ghost',
-                   font=('Segoe UI', 14)).pack(side='right', padx=(0, 4))
+            button = Button(chrome, '', command, icon_name=name, width=42, height=30, variant='ghost',
+                            font=('Segoe UI', 14))
+            button.pack(side='right', padx=(0, 4))
+            if name == 'maximize':
+                self.maximize_button = button
         self.resize_grip = SmoothCanvas(self.root, bg=BG, width=18, height=18,
                                      highlightthickness=0, cursor='size_nw_se')
         def draw_grip(event=None):
@@ -309,6 +410,7 @@ class App(ProductFeatures):
         self.resize_grip.place(relx=1, rely=1, anchor='se')
         self.resize_grip.bind('<ButtonPress-1>', self._resize_start)
         self.resize_grip.bind('<B1-Motion>', self._resize_window)
+        self.resize_grip.bind('<ButtonRelease-1>', self._flush_geometry)
 
         shell = tk.Frame(self.root, bg=BG)
         shell.pack(fill='both', expand=True, padx=24, pady=(8, 12))
@@ -401,7 +503,7 @@ class App(ProductFeatures):
         self.canvas = SmoothCanvas(graph.body, bg=PANEL, bd=0, highlightthickness=0)
         self.audio_panel = AudioPanel(self.audio_card.body, runtime=self.runtime)
         self.audio_panel.pack(fill='both', expand=True)
-        self.canvas.bind('<Configure>', lambda event: self.draw())
+        self.canvas.bind_resize(self.draw)
         self.canvas.bind('<ButtonPress-1>', self._graph_press)
         self.canvas.bind('<B1-Motion>', self._graph_drag)
         self.canvas.bind('<ButtonRelease-1>', self._graph_release)
@@ -1736,8 +1838,16 @@ class App(ProductFeatures):
             return False
         if hasattr(self, 'audio_panel'):
             self.audio_panel.close()
+        self.closing = True
         if getattr(self, 'tray', None):
             self.tray.close()
+        if getattr(self, 'native_window', None):
+            self.native_window.close()
+        if isinstance(self.root, tk.Tk):
+            # Cancel interpreter timers before deleting their Python commands.
+            # This also avoids stale callbacks when a new Tk window is opened.
+            for timer in self.root.tk.call('after', 'info'):
+                self.root.tk.call('after', 'cancel', timer)
         self.root.destroy()
         if getattr(self, 'window_icons', None):
             self.window_icons.close()
@@ -1768,7 +1878,7 @@ def main():
             pass
     set_taskbar_identity()
     root = tk.Tk()
-    runtime = UiRuntime(root, DATA, '0.20')
+    runtime = UiRuntime(root, DATA, '0.21')
     try:
         app = App(root, runtime)
         def activate_existing():

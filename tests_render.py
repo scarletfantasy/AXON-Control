@@ -114,13 +114,16 @@ class RasterTests(unittest.TestCase):
         canvas = memory_canvas()
         with patch('smooth_render.ImageTk.PhotoImage') as photo, \
                 patch('tkinter.Canvas.delete') as delete, \
-                patch('tkinter.Canvas.create_image'), patch('tkinter.Canvas.tag_lower'):
+                patch('tkinter.Canvas.find_withtag', return_value=(42,)), \
+                patch('tkinter.Canvas.itemconfigure') as update, \
+                patch('tkinter.Canvas.create_image') as create, patch('tkinter.Canvas.tag_lower'):
             for _ in range(3):
                 with canvas.paint():
                     white_rectangle(canvas._raster)
             self.assertEqual(photo.call_count, 1)
-            self.assertEqual(delete.call_count, 3)
-            self.assertEqual(delete.call_args.args, ('_smooth_layer',))
+            delete.assert_not_called()
+            create.assert_not_called()
+            self.assertEqual(update.call_count, 3)
             with canvas.paint():
                 canvas._raster.add('oval', (8, 8, 20, 20), '#ffffff')
             self.assertEqual(photo.call_count, 2)

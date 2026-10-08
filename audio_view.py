@@ -5,7 +5,7 @@ import tkinter as tk
 from tkinter import font as tkfont
 
 from audio_capture import AudioMonitor, DEFAULT_SOURCE
-from smooth_render import ANTIALIAS_AVAILABLE, ImageTk, SmoothCanvas, blend, painted
+from smooth_render import ANTIALIAS_AVAILABLE, SmoothCanvas, blend, framed, painted
 from spectrum_style import NeonRenderer, PeakTrail, STYLES
 from ui_widgets import PANEL, EDGE, TEXT, MUTED, DIM, ACCENT, Button, Popup
 
@@ -68,11 +68,11 @@ class AudioPanel(tk.Frame):
         # Live plots keep 2x antialiasing; static editor geometry retains 3x.
         self.canvas.raster_scale = 2
         self.spectrum_signature = self.meter_signature = None
-        self.canvas.bind('<Configure>', lambda event: self.draw())
+        self.canvas.bind_resize(self.draw)
         self.canvas.bind('<Motion>', self._motion)
         self.canvas.bind('<Leave>', self._leave)
         self.meters = SmoothCanvas(body, bg=PANEL, height=42, bd=0, highlightthickness=0)
-        self.meters.bind('<Configure>', lambda event: self.draw_meters())
+        self.meters.bind_resize(self.draw_meters)
         self.note_label = tk.Label(body, textvariable=self.note, bg=PANEL, fg=DIM, anchor='w',
                                    font=('Microsoft YaHei UI', 8), wraplength=340, justify='left')
         self.note_label.pack(side='bottom', fill='x', pady=(1, 0))
@@ -324,6 +324,7 @@ class AudioPanel(tk.Frame):
                 self.visual.update(frame['frequencies'], frame['levels'], frame['peaks'], time.monotonic())
             self.visual_key = key
 
+    @framed('canvas')
     def _draw_spectrum(self):
         canvas = self.canvas
         canvas.delete('all')
@@ -340,8 +341,7 @@ class AudioPanel(tk.Frame):
                                             self.frame['frequencies'] if self.frame else [],
                                             self.frame['levels'] if self.frame else [], self.visual.levels,
                                             style=self.style, running=self.running)
-            canvas._paint_photo = ImageTk.PhotoImage(picture, master=canvas)
-            canvas.create_image(0, 0, image=canvas._paint_photo, anchor='nw', tags='_smooth_layer')
+            canvas.present(picture)
         for level in ((0, -45, -90) if bottom - top < 75 else (0, -30, -60, -90)):
             if not ANTIALIAS_AVAILABLE:
                 canvas.create_line(left, y(level), right, y(level), fill='#2b353d', width=1)

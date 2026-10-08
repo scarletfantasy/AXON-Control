@@ -12,6 +12,7 @@
 | `audio_capture.py`、`audio_spectrum.py` | 独立 WASAPI 回环进程与 FFT 分析 |
 | `audio_view.py`、`spectrum_style.py` | 频谱交互、渐变、能量柱与峰值保持 |
 | `desktop_integration.py`、`app_lifecycle.py` | 托盘、启动选项与进程生命周期 |
+| `window_manager.py` | 原生最大化/还原、当前显示器工作区域与窗口位置 |
 | `user_data.py`、`preset_library.py`、`ui_runtime.py` | 数据存储、预设库与诊断 |
 | `synthetic_fixtures.py`、`tests_*.py` | 合成预设、模拟设备与回归测试 |
 

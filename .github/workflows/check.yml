@@ -14,7 +14,6 @@ jobs:
     timeout-minutes: 15
     env:
       AXON_CONTROL_SKIP_NATIVE_UI: '1'
-      AXON_CONTROL_DATA_DIR: ${{ runner.temp }}\axon-control-tests
       PYTHONUTF8: '1'
     steps:
       - uses: actions/checkout@v7.0.1
@@ -27,4 +26,6 @@ jobs:
       - name: Check public source contents
         run: python tools/check_public_tree.py
       - name: Offline regression tests
+        env:
+          AXON_CONTROL_DATA_DIR: ${{ runner.temp }}\axon-control-tests
         run: python -m unittest discover -p "tests_*.py" -v

@@ -1,0 +1,52 @@
+# Python and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.env.*
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build outputs; publish separately after reviewing the build
+/build/
+/dist/
+*.spec
+*.exe
+*.dll
+*.pdb
+*.zip
+*.7z
+
+# Device captures, local preferences, sessions, and diagnostics
+backups/
+drafts/
+validation-history/
+*-packets.json
+*.syx
+*.pcap
+*.pcapng
+*.log
+last-session.json
+recovery-session.json
+desktop-settings.json
+preset-library.json
+legacy-data-locations.json
+hardware-validation.json
+ui-validation.json
+performance-*.json
+spectrum-*.json
+startup-error.txt
+
+# Editors and operating-system files
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.tmp
+*.bak
+*.pem
+*.key

@@ -120,7 +120,7 @@ class App(ProductFeatures):
         self.init_features()
 
     def _style(self):
-        self.root.title('AXON Control 0.21 · AXON 3')
+        self.root.title('AXON Control 0.22 · AXON 3')
         self.root.configure(bg=BG)
         self.root.overrideredirect(True)
         width = min(1120, self.root.winfo_screenwidth()-96)
@@ -267,6 +267,9 @@ class App(ProductFeatures):
         self.root.focus_force()
         if self.tray:
             self.tray.hide()
+        if self.runtime:
+            self.runtime.record('window.activated', maximized=self.window_maximized,
+                                native_hwnd=self.native_hwnd)
 
     def _toggle_startup(self):
         try:
@@ -1878,13 +1881,16 @@ def main():
             pass
     set_taskbar_identity()
     root = tk.Tk()
-    runtime = UiRuntime(root, DATA, '0.21')
+    runtime = UiRuntime(root, DATA, '0.22')
     try:
         app = App(root, runtime)
         def activate_existing():
-            if instance.requested():
-                app._restore_window()
-            root.after(150, activate_existing)
+            try:
+                if instance.requested():
+                    app._restore_window()
+            finally:
+                if not app.closing:
+                    root.after(150, activate_existing)
         root.after(150, activate_existing)
         if args.offline_backup:
             root.after(100, lambda: app.load_document_path(args.offline_backup))

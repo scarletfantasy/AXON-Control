@@ -8,7 +8,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 import uuid
 
 from app_lifecycle import SingleInstance, supervise_parent
@@ -29,12 +29,14 @@ class LifecycleTests(unittest.TestCase):
         first = SingleInstance(name)
         try:
             self.assertTrue(first.primary)
+            self.assertEqual(first.owner_pid, os.getpid())
             remote = subprocess.run([sys.executable, '-c',
-                'from app_lifecycle import SingleInstance; import sys; '
-                's=SingleInstance(sys.argv[1]); print(s.primary); s.close()', name],
+                'from app_lifecycle import SingleInstance; import sys, json; '
+                's=SingleInstance(sys.argv[1]); '
+                'print(json.dumps({"primary": s.primary, "owner_pid": s.owner_pid})); s.close()', name],
                 cwd=Path(__file__).parent, capture_output=True, text=True, timeout=5)
             self.assertEqual(remote.returncode, 0, remote.stderr)
-            self.assertEqual(remote.stdout.strip(), 'False')
+            self.assertEqual(json.loads(remote.stdout), {'primary': False, 'owner_pid': os.getpid()})
             self.assertTrue(first.requested())
             second = SingleInstance(name)
             try:
@@ -43,11 +45,69 @@ class LifecycleTests(unittest.TestCase):
                 self.assertFalse(first.requested())
             finally:
                 second.close()
+            self.assertEqual(first.owner_pid, os.getpid())
         finally:
             first.close()
         third = SingleInstance(name)
         self.assertTrue(third.primary)
+        self.assertEqual(third.owner_pid, os.getpid())
         third.close()
+        third.close()
+
+    def test_foreground_permission_is_given_to_owner_before_activation(self):
+        name = 'Local\\AXONTest.' + uuid.uuid4().hex
+        first = SingleInstance(name)
+        second = None
+        real_dll = ctypes.WinDLL
+        user = Mock()
+        def grant(pid):
+            self.assertEqual(pid, os.getpid())
+            self.assertFalse(first.requested(), 'Activation was requested before foreground handoff')
+            return True
+        user.AllowSetForegroundWindow.side_effect = grant
+        def library(name, *args, **kwargs):
+            return user if name == 'user32' else real_dll(name, *args, **kwargs)
+        try:
+            with patch('app_lifecycle.C.WinDLL', side_effect=library):
+                second = SingleInstance(name)
+            self.assertFalse(second.primary)
+            self.assertTrue(second.foreground_granted)
+            user.AllowSetForegroundWindow.assert_called_once_with(os.getpid())
+            self.assertTrue(first.requested())
+        finally:
+            if second:
+                second.close()
+            first.close()
+
+    def test_denied_foreground_permission_still_requests_window_restore(self):
+        name = 'Local\\AXONTest.' + uuid.uuid4().hex
+        first = SingleInstance(name)
+        second = None
+        real_dll = ctypes.WinDLL
+        user = Mock()
+        user.AllowSetForegroundWindow.return_value = False
+        try:
+            with patch('app_lifecycle.C.WinDLL', side_effect=lambda name, *args, **kwargs:
+                       user if name == 'user32' else real_dll(name, *args, **kwargs)):
+                second = SingleInstance(name)
+            self.assertFalse(second.foreground_granted)
+            self.assertTrue(first.requested())
+        finally:
+            if second:
+                second.close()
+            first.close()
+
+    def test_owner_pid_is_cleared_on_exit_while_a_secondary_view_remains_open(self):
+        name = 'Local\\AXONTest.' + uuid.uuid4().hex
+        first = SingleInstance(name)
+        second = SingleInstance(name)
+        try:
+            self.assertEqual(second.owner_pid, os.getpid())
+            first.close()
+            self.assertEqual(second.owner_pid, 0)
+        finally:
+            second.close()
+            first.close()
 
     def test_autosave_retains_incomplete_input_and_skips_busy_writes(self):
         app = audition_app()

@@ -1,6 +1,6 @@
 # AXON Control
 
-独立实现的 NUX AXON 3 Windows 控制软件。提供七段 EQ 编辑、预设管理、A/B 试听和电脑播放声音的实时频谱。当前源码版本为 **0.21**，采用 MIT 许可证。
+独立实现的 NUX AXON 3 Windows 控制软件。提供七段 EQ 编辑、预设管理、A/B 试听和电脑播放声音的实时频谱。当前源码版本为 **0.22**，采用 MIT 许可证。
 
 Independent Windows USB-MIDI editor for NUX AXON 3, with EQ editing, preset management, A/B comparison, and a live playback spectrum.
 
@@ -12,6 +12,7 @@ Independent Windows USB-MIDI editor for NUX AXON 3, with EQ editing, preset mana
 - 电脑播放声音的 WASAPI 回环分析：流光曲线、能量柱、峰值保持、左右声道电平、音源选择与暂停。
 - 深色界面、抗锯齿绘制、系统托盘、可选开机启动和设备重连。
 - 原生最大化/还原、按当前显示器避开任务栏、状态同步图标、缩放事件合并与完整画面替换。
+- 双击重复启动时交接前台权限，唤回现有窗口和托盘中的编辑会话。
 - 写入前备份、槽位与参数一致性检查、读回验证及部分写入失败后的恢复处理。
 
 ## 环境与启动
